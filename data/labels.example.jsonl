@@ -1,0 +1,3 @@
+{"image":"images/roi_0001.png","source_image":"capture_001.png","split_group":"session_01","split":"train","center_x":173.4,"center_y":151.8,"label_state":"localizable","occupancy":"empty","tray_id":"left","slot_id":0}
+{"image":"images/roi_0002.png","source_image":"capture_002.png","split_group":"session_02","split":"val","center_x":148.2,"center_y":156.1,"label_state":"localizable","occupancy":"occupied","tray_id":"right","slot_id":3}
+{"image":"images/roi_0003.png","source_image":"capture_003.png","split_group":"session_03","split":"train","label_state":"reject","occupancy":"unknown","tray_id":"left","slot_id":5}
