@@ -60,9 +60,4 @@ uv pip install --python .onnx-venv/bin/python "onnx>=1.14"
 .onnx-venv/bin/python export_onnx.py --trtexec /path/to/TensorRT/bin/trtexec
 ```
 
-隔离环境避免改动训练依赖；脚本会同时执行 ONNX 结构校验和 PyTorch CUDA/TensorRT GPU 数值校验。V6 输入保持不变，输出为 `heatmap_logits [B,80,80]`、`offset_xy [B,2,80,80]`、`localizable_logit [B]`、`occupancy_logit [B]`。V6 训练使用 offset head 对 peak cell 内的连续偏移做 SmoothL1 监督：
-
-```bash
-./train_v6.sh
-.onnx-venv/bin/python export_onnx.py --checkpoint runs/v6/best.pt --output runs/v6/circle-center.onnx --trtexec /path/to/TensorRT/bin/trtexec
-```
+隔离环境避免改动训练依赖；脚本会同时执行 ONNX 结构校验和 PyTorch CUDA/TensorRT GPU 数值校验。

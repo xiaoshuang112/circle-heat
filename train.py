@@ -88,19 +88,8 @@ def gaussian_target(x: float, y: float, sigma: float = 1.5) -> torch.Tensor:
     return target / target.sum()
 
 
-def offset_target(x: float, y: float) -> tuple[torch.Tensor, torch.Tensor]:
-    heat_x = (x + 0.5) / STRIDE - 0.5
-    heat_y = (y + 0.5) / STRIDE - 0.5
-    cell_x = min(HEATMAP_SIZE - 1, max(0, round(heat_x)))
-    cell_y = min(HEATMAP_SIZE - 1, max(0, round(heat_y)))
-    return (
-        torch.tensor([heat_x - cell_x, heat_y - cell_y], dtype=torch.float32),
-        torch.tensor([cell_y, cell_x], dtype=torch.long),
-    )
-
-
 class SlotDataset(Dataset):
-    def __init__(self, labels: Path, split: str, augment: bool = False, heatmap_sigma: float = 1.5):
+    def __init__(self, labels: Path, split: str, augment: bool = False, heatmap_sigma: float = 1.0):
         self.root = labels.parent
         self.records = [
             record
@@ -149,17 +138,10 @@ class SlotDataset(Dataset):
         tensor = (tensor - IMAGENET_MEAN) / IMAGENET_STD
         tensor = torch.from_numpy(tensor.transpose(2, 0, 1))
         heatmap = gaussian_target(x, y, self.heatmap_sigma) if localizable else torch.zeros(HEATMAP_SIZE, HEATMAP_SIZE)
-        if localizable:
-            offsets, offset_cell = offset_target(x, y)
-        else:
-            offsets = torch.zeros(2)
-            offset_cell = torch.zeros(2, dtype=torch.long)
         occupancy = {"empty": 0.0, "occupied": 1.0}.get(record.get("occupancy"), -1.0)
         return {
             "image": tensor,
             "heatmap": heatmap,
-            "offset_target": offsets,
-            "offset_cell": offset_cell,
             "localizable": torch.tensor(float(localizable)),
             "occupancy": torch.tensor(occupancy),
             "center": torch.tensor([x or 0.0, y or 0.0]),
@@ -190,7 +172,6 @@ class TrayCenterNet(nn.Module):
         self.lateral = nn.ModuleList([nn.Conv2d(channels, 64, 1) for channels in self.feature_channels])
         self.refine = nn.ModuleList([DepthwiseBlock(64) for _ in range(3)])
         self.heatmap_head = nn.Conv2d(64, 1, 1)
-        self.offset_head = nn.Sequential(DepthwiseBlock(64), nn.Conv2d(64, 2, 1))
         self.localizable_head = nn.Linear(576, 1)
         self.occupancy_head = nn.Linear(576, 1)
 
@@ -207,7 +188,6 @@ class TrayCenterNet(nn.Module):
         pooled = F.adaptive_avg_pool2d(features[-1], 1).flatten(1)
         return {
             "heatmap": self.heatmap_head(pyramid).squeeze(1),
-            "offset": self.offset_head(pyramid),
             "localizable": self.localizable_head(pooled).squeeze(1),
             "occupancy": self.occupancy_head(pooled).squeeze(1),
         }
@@ -221,15 +201,6 @@ def compute_loss(output, batch):
         center_loss = -(targets[localizable] * F.log_softmax(logits[localizable], dim=1)).sum(1).mean()
     else:
         center_loss = logits.sum() * 0
-    if localizable.any():
-        offset_map = output["offset"][localizable].float()
-        offset_map = offset_map.permute(0, 2, 3, 1).reshape(offset_map.shape[0], -1, 2)
-        cells = batch["offset_cell"][localizable].long()
-        indices = cells[:, 0] * HEATMAP_SIZE + cells[:, 1]
-        predicted_offset = offset_map[torch.arange(len(indices), device=indices.device), indices]
-        offset_loss = F.smooth_l1_loss(predicted_offset, batch["offset_target"][localizable].float())
-    else:
-        offset_loss = output["offset"].sum() * 0
     localizable_loss = F.binary_cross_entropy_with_logits(output["localizable"].float(), batch["localizable"])
     occupancy_known = batch["occupancy"] >= 0
     if occupancy_known.any():
@@ -238,22 +209,15 @@ def compute_loss(output, batch):
         )
     else:
         occupancy_loss = output["occupancy"].sum() * 0
-    return center_loss + offset_loss + 0.2 * localizable_loss + 0.2 * occupancy_loss
+    return center_loss + 0.2 * localizable_loss + 0.2 * occupancy_loss
 
 
-def decode_centers(logits: torch.Tensor, offsets: torch.Tensor | None = None) -> torch.Tensor:
+def decode_centers(logits: torch.Tensor) -> torch.Tensor:
     probabilities = F.softmax(logits.flatten(1).float(), dim=1).reshape_as(logits)
     centers = []
     for heatmap in probabilities:
         peak = int(heatmap.argmax())
         peak_y, peak_x = divmod(peak, HEATMAP_SIZE)
-        if offsets is not None:
-            delta = offsets[len(centers), :, peak_y, peak_x].float()
-            centers.append(torch.stack((
-                (peak_x + delta[0] + 0.5) * STRIDE - 0.5,
-                (peak_y + delta[1] + 0.5) * STRIDE - 0.5,
-            )))
-            continue
         x0, x1 = max(0, peak_x - 2), min(HEATMAP_SIZE, peak_x + 3)
         y0, y1 = max(0, peak_y - 2), min(HEATMAP_SIZE, peak_y + 3)
         patch = heatmap[y0:y1, x0:x1]
@@ -292,7 +256,7 @@ def run_epoch(model, loader, device, optimizer=None, scaler=None):
             scaler.update()
         losses.append(loss.detach().item())
 
-        predicted = decode_centers(output["heatmap"], output["offset"])
+        predicted = decode_centers(output["heatmap"])
         mask = batch["localizable"].bool()
         if mask.any():
             scale = batch["meta"][mask, :2]
@@ -340,21 +304,10 @@ def self_check():
         scale, padding = sample["meta"][:2], sample["meta"][2:]
         round_trip = (sample["center"] - padding + 0.5) / scale - 0.5
         assert torch.allclose(round_trip, torch.tensor([80.0, 45.0]), atol=1e-4)
-        offsets, cell = offset_target(*sample["center"].tolist())
-        decoded_heatmap = torch.tensor([cell[1] + offsets[0], cell[0] + offsets[1]])
-        expected_heatmap = (sample["center"] + 0.5) / STRIDE - 0.5
-        assert torch.allclose(decoded_heatmap, expected_heatmap, atol=1e-6)
-        logits = torch.full((1, HEATMAP_SIZE, HEATMAP_SIZE), -100.0)
-        logits[0, cell[0], cell[1]] = 100.0
-        offset_map = torch.zeros(1, 2, HEATMAP_SIZE, HEATMAP_SIZE)
-        offset_map[0, :, cell[0], cell[1]] = offsets
-        decoded = decode_centers(logits, offset_map)[0]
-        assert torch.allclose(decoded, sample["center"], atol=1e-5)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = TrayCenterNet(pretrained=False).to(device)
         output = model(sample["image"].unsqueeze(0).to(device))
         assert output["heatmap"].shape == (1, HEATMAP_SIZE, HEATMAP_SIZE)
-        assert output["offset"].shape == (1, 2, HEATMAP_SIZE, HEATMAP_SIZE)
         batch = {key: value.unsqueeze(0).to(device) for key, value in sample.items()}
         loss = compute_loss(output, batch)
         loss.backward()
@@ -377,7 +330,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--freeze-epochs", type=int, default=5)
-    parser.add_argument("--heatmap-sigma", type=float, default=1.5)
+    parser.add_argument("--heatmap-sigma", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--overfit", action="store_true")
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
