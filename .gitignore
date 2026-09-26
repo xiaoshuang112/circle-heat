@@ -1,5 +1,7 @@
 .venv/
+.onnx-venv/
 __pycache__/
 runs/
 data/images/
 data/labels.jsonl
+data/raw/

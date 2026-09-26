@@ -9,5 +9,8 @@ dependencies = [
   "torchvision==0.21.0",
 ]
 
+[project.optional-dependencies]
+onnx = ["onnx>=1.14"]
+
 [tool.uv]
 package = false
