@@ -5,7 +5,7 @@ from pathlib import Path
 import onnx
 import torch
 
-from train import HEATMAP_SIZE, INPUT_SIZE, TrayCenterNet
+from model import HEATMAP_SIZE, INPUT_SIZE, TrayCenterNet
 
 
 class OnnxModel(torch.nn.Module):
@@ -26,7 +26,7 @@ def main():
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if checkpoint.get("input_size") != INPUT_SIZE or checkpoint.get("heatmap_size") != HEATMAP_SIZE:
-        raise ValueError("checkpoint input/heatmap size does not match train.py")
+        raise ValueError("checkpoint input/heatmap size does not match model.py")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for ONNX numerical verification")
 

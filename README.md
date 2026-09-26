@@ -2,6 +2,8 @@
 
 V5 单格位圆心与空满检测。输入 ROI 等比例 letterbox 到 320×320；模型输出 80×80 圆心热图、`localizable` 和 `empty/occupied`。
 
+网络结构及输入尺寸定义在 `model.py`，`train.py` 负责数据、损失和训练，`export_onnx.py` 直接复用模型定义。
+
 ## 数据
 
 最新训练清单是 `data/labels-v5-plus-reviewed-new.jsonl`：1033 个 ROI（train 817、val 216）。旧场景与新场景的验证清单分别是 `data/labels-v5.jsonl` 和 `data/labels-new-algorithm-reviewed.jsonl`。同一 `split_group` 不跨 train/val。
