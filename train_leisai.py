@@ -55,6 +55,30 @@ def read_archive(path: Path):
     return samples
 
 
+def read_auto_labels(path: Path):
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    accepted = [record for record in records if record["accepted"]]
+    if not accepted:
+        raise ValueError(f"{path}: no accepted pseudo-labels")
+    archives = {record["archive"] for record in accepted}
+    if len(archives) != 1:
+        raise ValueError(f"{path}: expected one source archive")
+    samples = []
+    with ZipFile(path.parent / archives.pop()) as archive:
+        for record in accepted:
+            image = cv2.imdecode(np.frombuffer(archive.read(record["image"]), np.uint8), cv2.IMREAD_COLOR)
+            if image is None or image.shape[:2] != (record["height"], record["width"]):
+                raise ValueError(f"{record['image']}: image size mismatch")
+            points = []
+            for point in record["points"]:
+                x, y, label = float(point["x"]), float(point["y"]), point["label"]
+                if label not in CLASSES or not (0 <= x < image.shape[1] and 0 <= y < image.shape[0]):
+                    raise ValueError(f"{record['image']}: invalid pseudo-label")
+                points.append((x, y, CLASSES.index(label)))
+            samples.append((PurePosixPath(record["image"]).stem, image, points))
+    return samples
+
+
 def split_samples(samples, seed: int, val_fraction: float):
     if not 0 < val_fraction < 1:
         raise ValueError("val_fraction must be between 0 and 1")
@@ -160,6 +184,8 @@ def run_epoch(model, loader, device, optimizer=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", type=Path, default=Path("data/raw/leisai/train-0927-1.zip"))
+    parser.add_argument("--extra-archive", action="append", type=Path, default=[], help="additional human-labeled LabelMe zip")
+    parser.add_argument("--auto-labels", type=Path, help="accepted pseudo-label manifest from auto_label_leisai.py")
     parser.add_argument("--output", type=Path, default=Path("runs/leisai"))
     parser.add_argument("--init-checkpoint", type=Path, help="optional V5 checkpoint for backbone/pyramid initialization")
     parser.add_argument("--epochs", type=int, default=100)
@@ -185,7 +211,18 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    train_samples, val_samples = split_samples(read_archive(args.archive), args.seed, args.val_fraction)
+    manual_samples = read_archive(args.archive)
+    for archive in args.extra_archive:
+        manual_samples.extend(read_archive(archive))
+    train_samples, val_samples = split_samples(manual_samples, args.seed, args.val_fraction)
+    manual_count = len(train_samples)
+    auto_count = 0
+    if args.auto_labels:
+        auto_samples = read_auto_labels(args.auto_labels)
+        if {sample[0] for sample in auto_samples} & {sample[0] for sample in manual_samples}:
+            raise ValueError("pseudo-labels overlap human-labeled images")
+        auto_count = len(auto_samples)
+        train_samples = train_samples * 4 + auto_samples
     train_loader = DataLoader(LeisaiDataset(train_samples, augment=True), batch_size=args.batch_size, shuffle=True, collate_fn=list)
     val_loader = DataLoader(LeisaiDataset(val_samples), batch_size=args.batch_size, collate_fn=list)
     model = TrayCenterNet(pretrained=args.init_checkpoint is None, heatmap_channels=2)
@@ -202,7 +239,7 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     args.output.mkdir(parents=True, exist_ok=True)
     best = float("inf")
-    print(f"device={device} train={len(train_samples)} val={len(val_samples)} classes={CLASSES}")
+    print(f"device={device} manual_train={manual_count} auto_train={auto_count} val={len(val_samples)} classes={CLASSES}")
     print("validation images:", ", ".join(sample[0] for sample in val_samples))
     for epoch in range(args.epochs):
         for parameter in model.backbone.parameters():

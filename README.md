@@ -57,3 +57,24 @@ uv sync --extra onnx
   --checkpoint runs/leisai/best.pt \
   --output runs/leisai/leisai-centers.onnx
 ```
+
+## 新增数据自动标注
+
+`fine.zip` 含 7 张人工标注图和一批未标注 PNG。自动标注脚本跳过已有人类标注的图片，以及旧包中逐像素重复的那张图；对其余图片生成带类别、圆心和置信度的 `data/leisai-auto-labels.jsonl`。完整的六目标图只有在数量、置信度（最低 0.4）和圆形位置检查都通过时，才标记为 `accepted`。裁切图的候选也保留在清单中，但不会自动进入训练。
+
+```bash
+.venv/bin/python auto_label_leisai.py \
+  --source data/raw/leisai/fine.zip \
+  --exclude-archive data/raw/leisai/train-0927-1.zip \
+  --checkpoint runs/leisai-expanded-v2/best.pt \
+  --output data/leisai-auto-labels.jsonl
+.venv/bin/python -u train_leisai.py \
+  --archive data/raw/leisai/train-0927-1.zip \
+  --extra-archive data/raw/leisai/fine.zip \
+  --auto-labels data/leisai-auto-labels.jsonl \
+  --init-checkpoint runs/leisai-expanded-v2/best.pt \
+  --output runs/leisai-expanded-v3 \
+  --epochs 20 --batch-size 16
+```
+
+当前清单有 153 张候选图，其中 142 张通过检查、11 张需要复核。训练时人工标注重复采样 4 次，验证集只用人工标注；这些图像来自相近拍摄场景，验证指标不能代替独立现场测试。
