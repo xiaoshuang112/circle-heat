@@ -49,3 +49,11 @@ uv sync --extra onnx
 ```
 
 `--init-checkpoint` 可省略；省略时使用 ImageNet 预训练骨干。最佳验证损失的模型保存为 `runs/leisai/best.pt`，与原项目的 `best.pt` 分开。推理时对两个热图分别做局部峰值检测；`train_leisai.py` 中的 `decode` 提供了坐标还原示例。
+
+雷赛模型可用同一导出脚本生成 ONNX，输出 `heatmap_logits` 的形状为 `[batch, 2, 80, 80]`；通道顺序是 `luosi`、`heikong`：
+
+```bash
+.venv/bin/python export_onnx.py \
+  --checkpoint runs/leisai/best.pt \
+  --output runs/leisai/leisai-centers.onnx
+```

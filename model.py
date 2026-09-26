@@ -44,8 +44,9 @@ class TrayCenterNet(nn.Module):
             pyramid = F.interpolate(pyramid, size=features[level].shape[-2:], mode="bilinear", align_corners=False)
             pyramid = self.refine[level](pyramid + self.lateral[level](features[level]))
         pooled = F.adaptive_avg_pool2d(features[-1], 1).flatten(1)
+        heatmap = self.heatmap_head(pyramid)
         return {
-            "heatmap": self.heatmap_head(pyramid).squeeze(1),
+            "heatmap": heatmap.squeeze(1) if self.heatmap_head.out_channels == 1 else heatmap,
             "localizable": self.localizable_head(pooled).squeeze(1),
             "occupancy": self.occupancy_head(pooled).squeeze(1),
         }
