@@ -23,13 +23,13 @@ class TrayCenterNet(nn.Module):
     feature_indices = (1, 3, 8, 12)
     feature_channels = (16, 24, 48, 576)
 
-    def __init__(self, pretrained: bool = True):
+    def __init__(self, pretrained: bool = True, heatmap_channels: int = 1):
         super().__init__()
         weights = MobileNet_V3_Small_Weights.DEFAULT if pretrained else None
         self.backbone = mobilenet_v3_small(weights=weights).features
         self.lateral = nn.ModuleList([nn.Conv2d(channels, 64, 1) for channels in self.feature_channels])
         self.refine = nn.ModuleList([DepthwiseBlock(64) for _ in range(3)])
-        self.heatmap_head = nn.Conv2d(64, 1, 1)
+        self.heatmap_head = nn.Conv2d(64, heatmap_channels, 1)
         self.localizable_head = nn.Linear(576, 1)
         self.occupancy_head = nn.Linear(576, 1)
 
