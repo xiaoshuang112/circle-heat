@@ -86,6 +86,30 @@ def gaussian_target(x: float, y: float, sigma: float = 1.5) -> torch.Tensor:
     return target / target.sum()
 
 
+def crop_bbox(image, x, y, bbox, jitter=False):
+    height, width = image.shape[:2]
+    bounds = np.asarray(bbox, dtype=float)
+    if bounds.shape != (4,) or not np.isfinite(bounds).all():
+        raise ValueError("bbox must contain four finite xyxy coordinates")
+    x0, y0, x1, y1 = bounds
+    if not (0 <= x0 < x1 <= width and 0 <= y0 < y1 <= height):
+        raise ValueError("bbox must be inside the source image")
+    left, top, right, bottom = math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1)
+    crop_width, crop_height = right - left, bottom - top
+    if x is not None and not (left <= x < right and top <= y < bottom):
+        raise ValueError("center must be inside bbox")
+    if jitter and random.random() < 0.5:
+        dx = random.randint(-round(crop_width * 0.03), round(crop_width * 0.03))
+        dy = random.randint(-round(crop_height * 0.03), round(crop_height * 0.03))
+        shifted_left = min(max(left + dx, 0), width - crop_width)
+        shifted_top = min(max(top + dy, 0), height - crop_height)
+        if x is not None and (shifted_left <= x < shifted_left + crop_width
+                             and shifted_top <= y < shifted_top + crop_height):
+            left, top = shifted_left, shifted_top
+    crop = image[top:top + crop_height, left:left + crop_width]
+    return crop, x - left if x is not None else None, y - top if y is not None else None, (left, top)
+
+
 class SlotDataset(Dataset):
     def __init__(self, labels: Path, split: str, augment: bool = False, heatmap_sigma: float = 1.0):
         self.root = labels.parent
@@ -115,7 +139,12 @@ class SlotDataset(Dataset):
         y = float(record["center_y"]) if localizable else None
         if localizable and not (0 <= x < image.shape[1] and 0 <= y < image.shape[0]):
             raise ValueError(f"{path}: center ({x}, {y}) is outside the ROI")
+        offset = (0, 0)
+        if "bbox" in record:
+            image, x, y, offset = crop_bbox(image, x, y, record["bbox"], jitter=self.augment)
         image, x, y, meta = letterbox(image, x, y)
+        # Inversion stays in the original image frame, including full-frame records.
+        meta[2:] -= np.asarray(offset, dtype=np.float32) * meta[:2]
 
         if self.augment:
             dx, dy = random.randint(-8, 8), random.randint(-8, 8)

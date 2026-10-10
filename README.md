@@ -18,6 +18,20 @@ V5 单格位圆心与空满检测。输入 ROI 等比例 letterbox 到 320×320�
 
 ## 训练
 
+2026-10-10 的整图人工修正数据已加入 `data/labels-v5-fullframe-reviewed-20261010.jsonl`：训练 1245、固定验证 216。新批次原有 10 张图，其中 app_images/teaching 的同名图像素完全重复，按用户要求以最后保存的 teaching 标注为准；保留 9 张图、43 个格位，全部归入同一个训练组。随后用户确认此前归为分类误判的 8 个格位实际为 occupied，已同步修正 Downloads 原标注、训练快照、复核副本和两份当前清单，最新分布为 empty 28、occupied 15。82 个外部留出样本不变。快照在 `data/raw/fullframe-reviewed-20261010/`，导入与修改记录在同名 `.audit.json`。本轮已经完成的模型仍是用修正前的标签训练；旧清单和标注备份在本轮 runs 目录的 `labels-before-occupied-fix-*` 中，历史 `comparison.json` 不覆盖。
+
+`prepare_fullframe_labelme.py` 使用 `group_id` 严格匹配 bbox 与 circle，并校验图像尺寸、坐标、类别及重复像素；只有显式传入 `--reviewed` 才允许导入。它不会修改 Downloads 中的原始标注。清单含 `bbox` 的新增样本在训练时有 50% 概率保持原裁剪、50% 概率平移 bbox（每轴最多框尺寸的 3%，约 18–19 原图像素），从整图真实像素取样，圆心与逆变换同步。旧 ROI 和验证集不使用此 bbox 抖动；原有轻微平移/亮度增强继续保留。
+
+本轮命令如下；新增 43 个格位的 `-new-trainfit.jsonl` 仅用于拟合检查，不能当独立测试集。
+
+```bash
+.venv/bin/python -u train.py \
+  --labels data/labels-v5-fullframe-reviewed-20261010.jsonl \
+  --output runs/v5-fullframe-reviewed-20261010 \
+  --epochs 100 --batch-size 16 --workers 0 --freeze-epochs 5 \
+  --heatmap-sigma 1.0 --seed 7 --pretrained
+```
+
 ```bash
 uv sync
 .venv/bin/python train.py --self-check
