@@ -40,6 +40,10 @@ uv sync --extra onnx
 
 导出脚本执行 ONNX 结构检查。输出名称为 `heatmap_logits`、`localizable_logit`、`occupancy_logit`。
 
+## 整图格位预标注
+
+新图片使用当前算法生成整图 LabelMe 标注、固定 50 px 圆半径并拷贝到 97 的流程，见 [整图格位自动标注操作文档](docs/FULL_FRAME_LABELME.md)。以后可直接让 AI 读取该文档并提供图片目录。
+
 ## 雷赛项目训练
 
 `data/raw/leisai/train-0927-1.zip` 内的 LabelMe JSON 可直接读取；脚本优先使用 JSON 内嵌图像，所以缺少同名 PNG 的标注也能训练。按是否含黑孔分层留出验证图，默认训练 11 张、验证 2 张。验证集很小，指标只能用于检查训练流程，不能代表现场精度。
