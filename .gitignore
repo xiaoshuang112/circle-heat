@@ -5,3 +5,8 @@ runs/
 data/images/
 data/labels.jsonl
 data/raw/
+
+# Local data import, evaluation, and manual-review artifacts.
+/test_inputs/
+/review_sets/
+/data/archive/

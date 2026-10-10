@@ -79,7 +79,16 @@ def read_auto_labels(path: Path):
     return samples
 
 
-def split_samples(samples, seed: int, val_fraction: float):
+def split_samples(samples, seed: int, val_fraction: float, validation_names=None):
+    if validation_names is not None:
+        unknown = set(validation_names) - {sample[0] for sample in samples}
+        if unknown:
+            raise ValueError(f"unknown validation image stems: {sorted(unknown)}")
+        train = [sample for sample in samples if sample[0] not in validation_names]
+        val = [sample for sample in samples if sample[0] in validation_names]
+        if not train or not val:
+            raise ValueError("explicit split needs nonempty train and validation sets")
+        return train, val
     if not 0 < val_fraction < 1:
         raise ValueError("val_fraction must be between 0 and 1")
     rng = random.Random(seed)
@@ -185,13 +194,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", type=Path, default=Path("data/raw/leisai/train-0927-1.zip"))
     parser.add_argument("--extra-archive", action="append", type=Path, default=[], help="additional human-labeled LabelMe zip")
-    parser.add_argument("--auto-labels", type=Path, help="accepted pseudo-label manifest from auto_label_leisai.py")
+    parser.add_argument("--auto-labels", action="append", type=Path, default=[], help="accepted pseudo-label manifest from auto_label_leisai.py")
     parser.add_argument("--output", type=Path, default=Path("runs/leisai"))
     parser.add_argument("--init-checkpoint", type=Path, help="optional V5 checkpoint for backbone/pyramid initialization")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--freeze-epochs", type=int, default=5)
     parser.add_argument("--val-fraction", type=float, default=0.2)
+    parser.add_argument("--validation-names", type=Path, help="file of held-out image stems, one per line; overrides random split")
+    parser.add_argument("--selection-metric", choices=("loss", "f1"), default="loss", help="metric used to select best.pt; F1 ties use validation loss")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--self-check", action="store_true")
     args = parser.parse_args()
@@ -204,7 +215,16 @@ def main():
         loss.backward()
         assert output.shape == (1, 2, HEATMAP_SIZE, HEATMAP_SIZE) and torch.isfinite(loss)
         assert len(decode(target[0] * 20 - 10, torch.tensor([1., 1., 0., 0.]))) == 2
-        print("self-check passed: two-class forward, loss backward and multi-peak decode")
+        samples = [("train", None, []), ("val", None, [])]
+        train, val = split_samples(samples, 7, 0.2, {"val"})
+        assert [sample[0] for sample in train] == ["train"] and [sample[0] for sample in val] == ["val"]
+        try:
+            split_samples(samples, 7, 0.2, {"missing"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unknown validation name accepted")
+        print("self-check passed: two-class forward, loss backward, multi-peak decode and explicit split")
         return
     if args.epochs < 1 or args.batch_size < 1 or args.freeze_epochs < 0:
         parser.error("epochs and batch-size must be positive; freeze-epochs cannot be negative")
@@ -214,11 +234,15 @@ def main():
     manual_samples = read_archive(args.archive)
     for archive in args.extra_archive:
         manual_samples.extend(read_archive(archive))
-    train_samples, val_samples = split_samples(manual_samples, args.seed, args.val_fraction)
+    if len({sample[0] for sample in manual_samples}) != len(manual_samples):
+        raise ValueError("duplicate image stems in human-labeled archives")
+    validation_names = ({line.strip() for line in args.validation_names.read_text().splitlines() if line.strip()}
+                        if args.validation_names else None)
+    train_samples, val_samples = split_samples(manual_samples, args.seed, args.val_fraction, validation_names)
     manual_count = len(train_samples)
     auto_count = 0
     if args.auto_labels:
-        auto_samples = read_auto_labels(args.auto_labels)
+        auto_samples = [sample for labels in args.auto_labels for sample in read_auto_labels(labels)]
         if {sample[0] for sample in auto_samples} & {sample[0] for sample in manual_samples}:
             raise ValueError("pseudo-labels overlap human-labeled images")
         auto_count = len(auto_samples)
@@ -238,7 +262,7 @@ def main():
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     args.output.mkdir(parents=True, exist_ok=True)
-    best = float("inf")
+    best = None
     print(f"device={device} manual_train={manual_count} auto_train={auto_count} val={len(val_samples)} classes={CLASSES}")
     print("validation images:", ", ".join(sample[0] for sample in val_samples))
     for epoch in range(args.epochs):
@@ -248,11 +272,15 @@ def main():
         val_loss, tp, fp, fn = run_epoch(model, val_loader, device)
         precision = sum(tp) / max(1, sum(tp) + sum(fp))
         recall = [tp[i] / max(1, tp[i] + fn[i]) for i in range(len(CLASSES))]
+        f1 = 2 * sum(tp) / max(1, 2 * sum(tp) + sum(fp) + sum(fn))
         print(f"epoch={epoch+1:03d} train_loss={train_loss:.3f} val_loss={val_loss:.3f} "
-              f"precision={precision:.3f} luosi_recall={recall[0]:.3f} heikong_recall={recall[1]:.3f}", flush=True)
-        if val_loss < best:
-            best = val_loss
-            torch.save({"model": model.state_dict(), "classes": CLASSES, "input_size": INPUT_SIZE, "heatmap_size": HEATMAP_SIZE}, args.output / "best.pt")
+              f"precision={precision:.3f} luosi_recall={recall[0]:.3f} heikong_recall={recall[1]:.3f} f1={f1:.4f}", flush=True)
+        score = (f1, -val_loss) if args.selection_metric == "f1" else (-val_loss,)
+        if best is None or score > best:
+            best = score
+            torch.save({"model": model.state_dict(), "classes": CLASSES, "input_size": INPUT_SIZE,
+                        "heatmap_size": HEATMAP_SIZE, "epoch": epoch + 1, "selection_metric": args.selection_metric,
+                        "val_loss": val_loss, "f1": f1}, args.output / "best.pt")
 
 
 if __name__ == "__main__":
