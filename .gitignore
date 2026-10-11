@@ -10,3 +10,8 @@ data/raw/
 /test_inputs/
 /review_sets/
 /data/archive/
+
+# Real annotations and dataset manifests stay local; retain the schema example.
+/data/*.jsonl
+!/data/labels.example.jsonl
+/data/*.audit.json

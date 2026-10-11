@@ -110,6 +110,28 @@ def crop_bbox(image, x, y, bbox, jitter=False):
     return crop, x - left if x is not None else None, y - top if y is not None else None, (left, top)
 
 
+def perspective_augment(image, x, y):
+    height, width = image.shape[:2]
+    corners = np.float32([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]])
+    limit = min(height, width) * 0.015
+    offsets = np.float32([[random.uniform(-limit, limit), random.uniform(-limit, limit)] for _ in corners])
+    matrix = cv2.getPerspectiveTransform(corners, corners + offsets)
+    if x is not None:
+        center = cv2.perspectiveTransform(np.float64([[[x, y]]]), matrix)[0, 0]
+        if not (0 <= center[0] < width and 0 <= center[1] < height):
+            return image, x, y, np.eye(3, dtype=np.float32)
+        x, y = map(float, center)
+    image = cv2.warpPerspective(image, matrix, (width, height), borderValue=(PAD_VALUE,) * 3)
+    return image, x, y, np.linalg.inv(matrix).astype(np.float32)
+
+
+def restore_centers(centers, meta, warp_inverse):
+    homogeneous = torch.cat([centers.float(), torch.ones_like(centers[:, :1])], dim=1)
+    unwarped = torch.bmm(warp_inverse.float(), homogeneous.unsqueeze(2)).squeeze(2)
+    unwarped = unwarped[:, :2] / unwarped[:, 2:]
+    return (unwarped - meta[:, 2:] + 0.5) / meta[:, :2] - 0.5
+
+
 class SlotDataset(Dataset):
     def __init__(self, labels: Path, split: str, augment: bool = False, heatmap_sigma: float = 1.0):
         self.root = labels.parent
@@ -145,9 +167,12 @@ class SlotDataset(Dataset):
         image, x, y, meta = letterbox(image, x, y)
         # Inversion stays in the original image frame, including full-frame records.
         meta[2:] -= np.asarray(offset, dtype=np.float32) * meta[:2]
+        warp_inverse = np.eye(3, dtype=np.float32)
 
         if self.augment:
             dx, dy = random.randint(-8, 8), random.randint(-8, 8)
+            if localizable and not (0 <= x + dx < INPUT_SIZE and 0 <= y + dy < INPUT_SIZE):
+                dx, dy = 0, 0
             image = cv2.warpAffine(
                 image,
                 np.float32([[1, 0, dx], [0, 1, dy]]),
@@ -157,9 +182,13 @@ class SlotDataset(Dataset):
             meta[2:] += (dx, dy)
             if localizable:
                 x, y = x + dx, y + dy
+            if random.random() < 0.35:
+                image, x, y, warp_inverse = perspective_augment(image, x, y)
             alpha = random.uniform(0.9, 1.1)
             beta = random.uniform(-12, 12)
             image = np.clip(image.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
+            if random.random() < 0.25:
+                image = cv2.GaussianBlur(image, (3, 3), sigmaX=random.uniform(0.3, 0.8))
 
         tensor = image.astype(np.float32) / 255.0
         tensor = (tensor - IMAGENET_MEAN) / IMAGENET_STD
@@ -173,6 +202,7 @@ class SlotDataset(Dataset):
             "occupancy": torch.tensor(occupancy),
             "center": torch.tensor([x or 0.0, y or 0.0]),
             "meta": torch.from_numpy(meta),
+            "warp_inverse": torch.from_numpy(warp_inverse),
         }
 
 
@@ -242,10 +272,8 @@ def run_epoch(model, loader, device, optimizer=None, scaler=None):
         predicted = decode_centers(output["heatmap"])
         mask = batch["localizable"].bool()
         if mask.any():
-            scale = batch["meta"][mask, :2]
-            padding = batch["meta"][mask, 2:]
-            predicted_roi = (predicted[mask] - padding + 0.5) / scale - 0.5
-            target_roi = (batch["center"][mask] - padding + 0.5) / scale - 0.5
+            predicted_roi = restore_centers(predicted[mask], batch["meta"][mask], batch["warp_inverse"][mask])
+            target_roi = restore_centers(batch["center"][mask], batch["meta"][mask], batch["warp_inverse"][mask])
             errors.extend(torch.linalg.vector_norm(predicted_roi - target_roi, dim=1).detach().cpu().tolist())
         known = batch["occupancy"] >= 0
         occupancy_correct += ((output["occupancy"][known] >= 0) == batch["occupancy"][known].bool()).sum().item()

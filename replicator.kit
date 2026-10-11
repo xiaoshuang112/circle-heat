@@ -1,0 +1,21 @@
+[package]
+title = "Circle Heat Replicator"
+version = "0.1.0"
+
+[dependencies]
+"omni.replicator.core" = {}
+"omni.kit.viewport.window" = {}
+"omni.hydra.rtx" = {}
+"omni.usd.schema.omni_lens_distortion" = {}
+
+[settings.app]
+name = "circle-heat-replicator"
+vulkan = true
+settings.persistent = false
+settings.fabricDefaultStageFrameHistoryCount = 3
+
+[settings.exts."omni.kit.registry.nucleus"]
+useUrllibForHttp = true
+
+[settings.rtx.pathtracing.optixDenoiser]
+enabled = true

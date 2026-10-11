@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from prepare_fullframe_labelme import read_pairs
-from train import SlotDataset, crop_bbox, letterbox
+from train import SlotDataset, crop_bbox, letterbox, restore_centers
 
 
 class FullFrameTests(unittest.TestCase):
@@ -58,8 +58,7 @@ class FullFrameTests(unittest.TestCase):
             for seed in range(30):
                 random.seed(seed)
                 sample = dataset[0]
-                meta = sample['meta']
-                recovered = (sample['center'] - meta[2:] + .5) / meta[:2] - .5
+                recovered = restore_centers(sample['center'][None], sample['meta'][None], sample['warp_inverse'][None])[0]
                 torch.testing.assert_close(recovered, torch.tensor([100.25, 59.75]), atol=1e-4, rtol=0)
                 self.assertTrue(torch.isfinite(sample['heatmap']).all())
             data['shapes'] = shapes[:1]
